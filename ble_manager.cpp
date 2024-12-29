@@ -51,7 +51,6 @@ class AlarmTimeCallback : public BLECharacteristicCallbacks {
         Serial.println("Notification envoyée : Alarme Maj");
       }
     }
-    Serial.printf("Alarme value");
   }
 };
 
@@ -171,6 +170,10 @@ void initBLE() {
   BLEDescriptor *currentTimeDesc = new BLEDescriptor(BLEUUID((uint16_t)0x2901));  // BLE2901 standard
   currentTimeDesc->setValue("Current Time");                                      // Description textuelle
   currentTimeChar->addDescriptor(currentTimeDesc);
+    BLE2902 *currDesc2902 = new BLE2902();
+  // Descripteur CCCD pour permettre l'activation des notifications
+  currDesc2902->setNotifications(true);  // Active les notifications par défaut côté ESP32
+  currentTimeChar->addDescriptor(currDesc2902);
 
   // Heure de l'alarme
   BLECharacteristic *alarmTimeChar = service->createCharacteristic(
@@ -217,9 +220,4 @@ void initBLE() {
   advertising->setMinPreferred(0x12);         // Compatibilité avec appareils modernes
   BLEDevice::startAdvertising();
 
-  if (alarmTimeChar) {
-    Serial.println("AlarmTimeChar initialisée avec succès.");
-  } else {
-    Serial.println("Échec de l'initialisation de AlarmTimeChar.");
-  }
 }

@@ -34,5 +34,4 @@ void loop() {
   // Gérer les notifications liées à l'alarme
   handleAlarmNotifications();
 
-  delay(100);  // Réduire la charge sur le CPU
 }
