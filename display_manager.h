@@ -13,6 +13,8 @@
 
 extern bool displayActive;  // État de l'écran
 
+extern unsigned long lastActiveTime;
+
 // Initialisation de l'objet écran
 extern Adafruit_SSD1306 display;
 

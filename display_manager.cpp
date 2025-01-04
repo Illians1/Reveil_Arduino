@@ -5,10 +5,10 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 bool displayActive = true;  // Par défaut, l'écran est éteint
-unsigned long lastActiveTime = 0;
 const unsigned long screenTimeout = 10000;  // Délai avant extinction (10 secondes)
 bool isDisplayingPasskey = false;           // Indique si on affiche uniquement le code PIN
 String currentPasskey = "";                 // Stocke le code PIN affiché
+unsigned long lastActiveTime = 0;
 
 void initDisplay() {
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_I2C_ADDRESS)) {

@@ -6,6 +6,9 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <BLESecurity.h>
+#include "rtc_manager.h"
+#include "alarmsound_manager.h"
+#include "display_manager.h"
 
 void initBLE();
 

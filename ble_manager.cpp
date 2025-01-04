@@ -1,7 +1,4 @@
 #include "ble_manager.h"
-#include "rtc_manager.h"
-#include "alarmsound_manager.h"
-#include "display_manager.h"
 
 // UUIDs BLE
 #define SERVICE_UUID "c25bc52e-8920-407f-ae4f-ff03c471d222"
@@ -26,6 +23,12 @@ class CurrentTimeCallback : public BLECharacteristicCallbacks {
       DateTime newTime(year, month, day, hour, minute, second);
       setRTC(newTime);  // Utilise la fonction pour régler l'heure du RTC
       timeSet = true;
+
+      // Activer l'écran
+      displayActive = true;
+      lastActiveTime = millis();
+      display.ssd1306_command(SSD1306_DISPLAYON);
+
       Serial.println("Heure actuelle synchronisée !");
       // Envoyer une notification à l'application
       if (taskStatusChar) {  // Vérifiez que la caractéristique de notification est initialisée
@@ -43,13 +46,30 @@ class AlarmTimeCallback : public BLECharacteristicCallbacks {
     if (value.length() == 5) {  // Format attendu : "HH:MM"
       sscanf(value.c_str(), "%2d:%2d", &myAlarm.hour, &myAlarm.minute);
       myAlarm.set = true;
+
+      // Activer l'écran
+      displayActive = true;
+      lastActiveTime = millis();
+      display.ssd1306_command(SSD1306_DISPLAYON);
+
       Serial.printf("Alarme configurée à %02d:%02d\n", myAlarm.hour, myAlarm.minute);
-      // Envoyer une notification à l'application
-      if (taskStatusChar) {  // Vérifiez que la caractéristique de notification est initialisée
+      if (taskStatusChar) {
         taskStatusChar->setValue("Alarme Maj");
-        taskStatusChar->notify();  // Envoie la notification
+        taskStatusChar->notify();
         Serial.println("Notification envoyée : Alarme Maj");
       }
+    }
+  }
+
+  void onRead(BLECharacteristic *pCharacteristic) override {
+    char alarmTime[6];  // Format "HH:MM\0"
+    if (myAlarm.set) {
+      sprintf(alarmTime, "%02d:%02d", myAlarm.hour, myAlarm.minute);
+      pCharacteristic->setValue((uint8_t *)alarmTime, strlen(alarmTime));  // Correction du setValue
+      Serial.printf("Lecture de l'heure de l'alarme : %s\n", alarmTime);
+    } else {
+      pCharacteristic->setValue((uint8_t *)"", 0);  // Renvoyer une chaîne vide si l'alarme n'est pas configurée
+      Serial.println("Lecture de l'heure de l'alarme : Alarme non configurée");
     }
   }
 };
@@ -58,30 +78,17 @@ class AlarmControlCallback : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pCharacteristic) override {
     String value = pCharacteristic->getValue();
     if (value == "STOP") {
-      stopAlarm();
-      stopAlarmSound();
-      // Envoyer une notification à l'application
-      if (taskStatusChar) {  // Vérifiez que la caractéristique de notification est initialisée
-        taskStatusChar->setValue("Alarme Stop");
-        taskStatusChar->notify();  // Envoie la notification
-        Serial.println("Notification envoyée : Alarme Stop");
+      if (myAlarm.triggered) {
+        stopAlarm();
+        stopAlarmSound();
+        // Envoyer une notification à l'application
+        if (taskStatusChar) {  // Vérifiez que la caractéristique de notification est initialisée
+          taskStatusChar->setValue("Alarme Stop");
+          taskStatusChar->notify();  // Envoie la notification
+          Serial.println("Notification envoyée : Alarme Stop");
+        }
       }
-    }
-  }
-};
-
-class AlarmStateCallback : public BLECharacteristicCallbacks {
-  void onRead(BLECharacteristic *pCharacteristic) override {
-    char alarmData[32];
-    if (myAlarm.set) {
-      sprintf(alarmData, "%d:%02d %s",
-              myAlarm.hour, myAlarm.minute,
-              myAlarm.set ? "Set" : "Not Set");
-      if (taskStatusChar) {  // Vérifiez que la caractéristique de notification est initialisée
-      }
-    }
-    pCharacteristic->setValue(alarmData);
-    Serial.printf("Lecture de l'état de l'alarme : %s\n", alarmData);
+    } else Serial.println("Commande invalide pour stopper l'alarme");
   }
 };
 
@@ -89,12 +96,20 @@ class AlarmDisableCallback : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pCharacteristic) override {
     String value = pCharacteristic->getValue();
     if (value == "DISABLE") {  // Vérifiez que la commande est valide
-      myAlarm.set = false;     // Désactiver l'alarme
-      Serial.println("Commande reçue : Alarme désactivée");
-      if (taskStatusChar) {  // Envoyer une notification
-        taskStatusChar->setValue("Alarme désactivée");
-        taskStatusChar->notify();
-        Serial.println("Notification envoyée : Alarme désactivée");
+      if (myAlarm.set) {
+        myAlarm.set = false;  // Désactiver l'alarme
+
+        // Activer l'écran
+        displayActive = true;
+        lastActiveTime = millis();
+        display.ssd1306_command(SSD1306_DISPLAYON);
+
+        Serial.println("Commande reçue : Alarme désactivée");
+        if (taskStatusChar) {  // Envoyer une notification
+          taskStatusChar->setValue("Alarme désactivée");
+          taskStatusChar->notify();
+          Serial.println("Notification envoyée : Alarme désactivée");
+        }
       }
     } else {
       Serial.println("Commande invalide pour désactiver l'alarme");
@@ -151,72 +166,71 @@ void initBLE() {
   // Ajouter les callbacks
   server->setCallbacks(new ServerCallbacks());
 
-  BLEService *service = server->createService(SERVICE_UUID);
+  // Créer le service avec une taille suffisante
+  BLEService *service = server->createService(BLEUUID(SERVICE_UUID), 30, 0);  // Augmenter le nombre de handles
 
   taskStatusChar = service->createCharacteristic(
     TASK_STATUS_UUID,
     BLECharacteristic::PROPERTY_NOTIFY);
-  // Ajout explicite du descripteur CCCD pour permettre les notifications
-  BLE2902 *desc2902 = new BLE2902();
-  // Descripteur CCCD pour permettre l'activation des notifications
-  desc2902->setNotifications(true);  // Active les notifications par défaut côté ESP32
-  taskStatusChar->addDescriptor(desc2902);
+  BLE2902 *taskStatusDesc = new BLE2902();
+  taskStatusDesc->setNotifications(true);
+  taskStatusChar->addDescriptor(taskStatusDesc);
 
-  // Heure actuelle
+  // Current Time
   BLECharacteristic *currentTimeChar = service->createCharacteristic(
-    CURRENT_TIME_UUID, BLECharacteristic::PROPERTY_WRITE);
+    CURRENT_TIME_UUID,
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
   currentTimeChar->setCallbacks(new CurrentTimeCallback());
-  // Créer un descripteur
-  BLEDescriptor *currentTimeDesc = new BLEDescriptor(BLEUUID((uint16_t)0x2901));  // BLE2901 standard
-  currentTimeDesc->setValue("Current Time");                                      // Description textuelle
+  BLE2902 *currentTimeDesc = new BLE2902();
+  currentTimeDesc->setNotifications(true);
   currentTimeChar->addDescriptor(currentTimeDesc);
-  BLE2902 *currDesc2902 = new BLE2902();
-  // Descripteur CCCD pour permettre l'activation des notifications
-  currDesc2902->setNotifications(true);  // Active les notifications par défaut côté ESP32
-  currentTimeChar->addDescriptor(currDesc2902);
+  currentTimeChar->addDescriptor(new BLEDescriptor(BLEUUID((uint16_t)0x2901)));
 
-  // Heure de l'alarme
+  // Alarm Time
   BLECharacteristic *alarmTimeChar = service->createCharacteristic(
-    ALARM_TIME_UUID, BLECharacteristic::PROPERTY_WRITE);
+    ALARM_TIME_UUID,
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
   alarmTimeChar->setCallbacks(new AlarmTimeCallback());
-  // Créer un descripteur
-  BLEDescriptor *alarmTimeDesc = new BLEDescriptor(BLEUUID((uint16_t)0x2901));  // BLE2901 standard
-  alarmTimeDesc->setValue("Alarm Time");                                        // Description textuelle
+  BLE2902 *alarmTimeDesc = new BLE2902();
+  alarmTimeDesc->setNotifications(true);
   alarmTimeChar->addDescriptor(alarmTimeDesc);
+  alarmTimeChar->addDescriptor(new BLEDescriptor(BLEUUID((uint16_t)0x2901)));
 
-  // Contrôle de l'alarme
+  // Alarm Control
   BLECharacteristic *alarmControlChar = service->createCharacteristic(
-    ALARM_CONTROL_UUID, BLECharacteristic::PROPERTY_WRITE);
+    ALARM_CONTROL_UUID,
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
   alarmControlChar->setCallbacks(new AlarmControlCallback());
-  // Créer un descripteur
-  BLEDescriptor *alarmControlDesc = new BLEDescriptor(BLEUUID((uint16_t)0x2901));  // BLE2901 standard
-  alarmControlDesc->setValue("Alarm Control");                                     // Description textuelle
+  BLE2902 *alarmControlDesc = new BLE2902();
+  alarmControlDesc->setNotifications(true);
   alarmControlChar->addDescriptor(alarmControlDesc);
+  alarmControlChar->addDescriptor(new BLEDescriptor(BLEUUID((uint16_t)0x2901)));
 
-  // Etat de l'alarme
-  BLECharacteristic *alarmStateChar = service->createCharacteristic(
-    ALARM_STATE_UUID, BLECharacteristic::PROPERTY_READ);
-  alarmStateChar->setCallbacks(new AlarmStateCallback());
-  // Créer un descripteur
-  BLEDescriptor *alarmStateDesc = new BLEDescriptor(BLEUUID((uint16_t)0x2901));  // BLE2901 standard
-  alarmStateDesc->setValue("Alarm State");                                       // Description textuelle
-  alarmStateChar->addDescriptor(alarmStateDesc);
-
-  // Desactiver l'alarme
+  // Alarm Disable - Vérification
   BLECharacteristic *alarmDisableChar = service->createCharacteristic(
-    ALARM_DISABLE_UUID, BLECharacteristic::PROPERTY_WRITE);
-  alarmDisableChar->setCallbacks(new AlarmDisableCallback());
-  // Créer un descripteur
-  BLEDescriptor *alarmDisableDesc = new BLEDescriptor(BLEUUID((uint16_t)0x2901));  // BLE2901 standard
-  alarmDisableDesc->setValue("Alarm Disable");                                     // Description textuelle
-  alarmDisableChar->addDescriptor(alarmDisableDesc);
+    ALARM_DISABLE_UUID,
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
+  if (alarmDisableChar == nullptr) {
+    Serial.println("Erreur lors de la création de alarmDisableChar");
+  } else {
+    alarmDisableChar->setCallbacks(new AlarmDisableCallback());
+    BLE2902 *alarmDisableDesc = new BLE2902();
+    alarmDisableDesc->setNotifications(true);
+    alarmDisableChar->addDescriptor(alarmDisableDesc);
+    Serial.println("AlarmDisable caractéristique créée avec succès");
+  }
 
+  // Démarrer le service AVANT de démarrer l'advertising
   service->start();
 
+  // Configuration de l'advertising
   BLEAdvertising *advertising = BLEDevice::getAdvertising();
-  advertising->addServiceUUID(SERVICE_UUID);  // Rendre le service identifiable
-  advertising->setScanResponse(true);         // Répondre aux scans BLE
-  advertising->setMinPreferred(0x06);         // Optimisation pour appareils récents
-  advertising->setMinPreferred(0x12);         // Compatibilité avec appareils modernes
+  advertising->addServiceUUID(SERVICE_UUID);
+  advertising->setScanResponse(true);
+  advertising->setMinPreferred(0x06);
+  advertising->setMinPreferred(0x12);
+
+  // Démarrer l'advertising
   BLEDevice::startAdvertising();
+  Serial.println("BLE prêt à se connecter");
 }
