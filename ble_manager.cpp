@@ -13,6 +13,9 @@ unsigned long lastNotificationTime = 0;  // Initialisé à 0
 
 BLECharacteristic *taskStatusChar;
 
+#define MAX_BONDED_DEVICES 3
+static uint32_t PASSKEY = 123456;  // Enlever const pour éviter les problèmes de cast
+
 // --- CALLBACKS BLE --- //
 class CurrentTimeCallback : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pCharacteristic) override {
@@ -120,12 +123,19 @@ class AlarmDisableCallback : public BLECharacteristicCallbacks {
 // --- CALLBACKS DU SERVEUR --- //
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *server) override {
-    Serial.println("Appareil connecté.");
+    Serial.println("Appareil connecté - En attente d'authentification");
+    // Forcer la demande de sécurité immédiatement après la connexion
+    uint16_t conn_id = server->getConnId();
+    esp_bd_addr_t remote_bda;
+    const uint8_t *bda = esp_bt_dev_get_address();
+    memcpy(remote_bda, bda, sizeof(esp_bd_addr_t));
+    esp_ble_set_encryption(remote_bda, ESP_BLE_SEC_ENCRYPT_MITM);
+    BLEDevice::startAdvertising();
   }
 
   void onDisconnect(BLEServer *server) override {
     Serial.println("Appareil déconnecté.");
-    server->startAdvertising();  // Redémarre la publicité après une déconnexion
+    server->startAdvertising();
   }
 };
 
@@ -149,26 +159,82 @@ void handleAlarmNotifications() {
   }
 }
 
+// Nouvelle classe pour gérer la sécurité
+class SecurityCallback : public BLESecurityCallbacks {
+  uint32_t onPassKeyRequest() override {
+    Serial.println("Demande de code PIN");
+    return PASSKEY;
+  }
+
+  void onPassKeyNotify(uint32_t pass_key) override {
+    Serial.printf("Code PIN à entrer : %06d\n", pass_key);
+    // Ici vous pourriez afficher le code sur l'écran OLED si nécessaire
+  }
+
+  bool onSecurityRequest() override {
+    Serial.println("Demande de sécurité reçue");
+    return true;
+  }
+
+  void onAuthenticationComplete(esp_ble_auth_cmpl_t auth_cmpl) override {
+    if (auth_cmpl.success) {
+      Serial.println("Authentification réussie");
+      // Vérifier le nombre d'appareils appairés
+      int num_bonded = esp_ble_get_bond_device_num();
+      if (num_bonded > MAX_BONDED_DEVICES) {
+        // Supprimer le plus ancien appairage
+        esp_ble_bond_dev_t *dev_list = new esp_ble_bond_dev_t[num_bonded];
+        esp_ble_get_bond_device_list(&num_bonded, dev_list);
+        esp_ble_remove_bond_device(dev_list[0].bd_addr);
+        delete[] dev_list;
+        Serial.println("Ancien appairage supprimé");
+      }
+    } else {
+      Serial.println("Authentification échouée");
+      // Déconnecter l'appareil non authentifié
+      esp_ble_gap_disconnect(auth_cmpl.bd_addr);
+    }
+  }
+
+  bool onConfirmPIN(uint32_t pin) override {
+    Serial.printf("Confirmation du PIN : %06d\n", pin);
+    return true;
+  }
+};
+
 void initBLE() {
   BLEDevice::init("AuroWake_1234");
 
-
-  // Configurer la sécurité BLE
+  // Configuration de la sécurité
   BLESecurity *pSecurity = new BLESecurity();
+  BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
+  BLEDevice::setSecurityCallbacks(new SecurityCallback());
 
-  // Activer le mode bonding
-  pSecurity->setAuthenticationMode(ESP_LE_AUTH_BOND);                           // Mode bonding avec Secure Connections
-  pSecurity->setCapability(ESP_IO_CAP_NONE);                                    // Affichage du code sur l'ESP32
-  pSecurity->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);  // Chiffrement et clé d'identité
+  // Paramètres de sécurité
+  esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_MITM_BOND;
+  esp_ble_io_cap_t iocap = ESP_IO_CAP_OUT;
+  uint8_t key_size = 16;
+  uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+  uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+  uint8_t auth_option = ESP_BLE_ONLY_ACCEPT_SPECIFIED_AUTH_ENABLE;
 
+  // Configuration des paramètres de sécurité
+  esp_ble_gap_set_security_param(ESP_BLE_SM_SET_STATIC_PASSKEY, (void *)&PASSKEY, sizeof(uint32_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(uint8_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_IOCAP_MODE, &iocap, sizeof(uint8_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(uint8_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_ONLY_ACCEPT_SPECIFIED_SEC_AUTH, &auth_option, sizeof(uint8_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(uint8_t));
+  esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(uint8_t));
+
+  // Configurer le serveur BLE
   BLEServer *server = BLEDevice::createServer();
-
-  // Ajouter les callbacks
   server->setCallbacks(new ServerCallbacks());
 
   // Créer le service avec une taille suffisante
   BLEService *service = server->createService(BLEUUID(SERVICE_UUID), 30, 0);  // Augmenter le nombre de handles
 
+  // Task Status (Notification)
   taskStatusChar = service->createCharacteristic(
     TASK_STATUS_UUID,
     BLECharacteristic::PROPERTY_NOTIFY);
@@ -179,46 +245,41 @@ void initBLE() {
   // Current Time
   BLECharacteristic *currentTimeChar = service->createCharacteristic(
     CURRENT_TIME_UUID,
-    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
+    BLECharacteristic::PROPERTY_WRITE);
+  currentTimeChar->setAccessPermissions(ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM);
   currentTimeChar->setCallbacks(new CurrentTimeCallback());
   BLE2902 *currentTimeDesc = new BLE2902();
-  currentTimeDesc->setNotifications(true);
   currentTimeChar->addDescriptor(currentTimeDesc);
   currentTimeChar->addDescriptor(new BLEDescriptor(BLEUUID((uint16_t)0x2901)));
 
   // Alarm Time
   BLECharacteristic *alarmTimeChar = service->createCharacteristic(
     ALARM_TIME_UUID,
-    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ);
+  alarmTimeChar->setAccessPermissions(ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM);
   alarmTimeChar->setCallbacks(new AlarmTimeCallback());
   BLE2902 *alarmTimeDesc = new BLE2902();
-  alarmTimeDesc->setNotifications(true);
   alarmTimeChar->addDescriptor(alarmTimeDesc);
   alarmTimeChar->addDescriptor(new BLEDescriptor(BLEUUID((uint16_t)0x2901)));
 
   // Alarm Control
   BLECharacteristic *alarmControlChar = service->createCharacteristic(
     ALARM_CONTROL_UUID,
-    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
+    BLECharacteristic::PROPERTY_WRITE);
+  alarmControlChar->setAccessPermissions(ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM);
   alarmControlChar->setCallbacks(new AlarmControlCallback());
   BLE2902 *alarmControlDesc = new BLE2902();
-  alarmControlDesc->setNotifications(true);
   alarmControlChar->addDescriptor(alarmControlDesc);
   alarmControlChar->addDescriptor(new BLEDescriptor(BLEUUID((uint16_t)0x2901)));
 
   // Alarm Disable - Vérification
   BLECharacteristic *alarmDisableChar = service->createCharacteristic(
     ALARM_DISABLE_UUID,
-    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY);
-  if (alarmDisableChar == nullptr) {
-    Serial.println("Erreur lors de la création de alarmDisableChar");
-  } else {
-    alarmDisableChar->setCallbacks(new AlarmDisableCallback());
-    BLE2902 *alarmDisableDesc = new BLE2902();
-    alarmDisableDesc->setNotifications(true);
-    alarmDisableChar->addDescriptor(alarmDisableDesc);
-    Serial.println("AlarmDisable caractéristique créée avec succès");
-  }
+    BLECharacteristic::PROPERTY_WRITE);
+  alarmDisableChar->setAccessPermissions(ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM);
+  alarmDisableChar->setCallbacks(new AlarmDisableCallback());
+  BLE2902 *alarmDisableDesc = new BLE2902();
+  alarmDisableChar->addDescriptor(alarmDisableDesc);
 
   // Démarrer le service AVANT de démarrer l'advertising
   service->start();
