@@ -30,6 +30,8 @@ void setup() {
 void loop() {
   DateTime now = rtc.now();
 
+  handle_bluetooth();
+
   // Gérer l'alarme
   updateAlarm(now);
 
