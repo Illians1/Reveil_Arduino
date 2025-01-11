@@ -10,6 +10,7 @@ const int BUTTON_NEXT_PIN = 16;
 const int BUTTON_PREV_PIN = 17;
 const unsigned long TIMEOUT_STEP = 300000;     // 5 minutes en millisecondes
 const unsigned long MAX_TIMEOUT = 7200000;     // 120 minutes en millisecondes
+const unsigned long DELAI_GRACE = 300000;      // 5 minutes de grâce en millisecondes
 unsigned long DELAI_TIMEOUT = 1800000;         // 30 minutes en millisecondes (valeur initiale)
 
 // Variables pour gérer le timeout
@@ -117,15 +118,12 @@ void handle_bluetooth() {
   // Vérifier si un appareil est connecté et si le délai est dépassé
   if (a2dp_sink.is_connected()) {
     if (delai == 0) {
-      // Forcer la déconnexion si le timeout est à 0
       Serial.println("Timeout désactivé - Déconnexion forcée");
       a2dp_sink.disconnect();
     } else {
       unsigned long tempsEcoule = millis() - derniereMiseAJour;
-      unsigned long tempsRestant = (tempsEcoule >= delai) ? 0 : (delai - tempsEcoule);
-
-      if (tempsEcoule >= delai) {
-        Serial.println("Timeout atteint - Déconnexion");
+      if (tempsEcoule >= (delai + DELAI_GRACE)) {
+        Serial.println("Timeout + délai de grâce atteint - Déconnexion");
         a2dp_sink.disconnect();
         derniereMiseAJour = millis();
       }
