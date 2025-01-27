@@ -21,15 +21,29 @@ void updateAlarm(const DateTime &now) {
     myAlarm.startTime = millis();
     lastAlarmTime = now;
   }
-}
 
-bool shouldTriggerAlarm(const DateTime &now) {
-  return myAlarm.triggered && millis() - myAlarm.startTime > 10 * 60 * 1000;
+  // Vérifier si l'alarme doit être arrêtée automatiquement
+  if (myAlarm.triggered && (millis() - myAlarm.startTime >= ALARM_AUTO_STOP_DURATION)) {
+    stopAlarm();
+    stopAlarmSound();
+    disableAlarm();
+    Serial.println("Alarme arrêtée et désactivée automatiquement après 10 secondes");
+  }
 }
 
 void stopAlarm() {
   myAlarm.triggered = false;
   Serial.println("Alarme arrêtée.");
+}
+
+void disableAlarm() {
+  myAlarm.set = false;
+  Serial.println("Alarme désactivée.");
+}
+
+void activateAlarm() {
+  myAlarm.set = true;
+  Serial.println("Alarme activée.");
 }
 
 void setRTC(const DateTime &time) {

@@ -48,7 +48,7 @@ class AlarmTimeCallback : public BLECharacteristicCallbacks {
     String value = pCharacteristic->getValue();
     if (value.length() == 5) {  // Format attendu : "HH:MM"
       sscanf(value.c_str(), "%2d:%2d", &myAlarm.hour, &myAlarm.minute);
-      myAlarm.set = true;
+      activateAlarm();
 
       // Activer l'écran
       displayActive = true;
@@ -65,15 +65,12 @@ class AlarmTimeCallback : public BLECharacteristicCallbacks {
   }
 
   void onRead(BLECharacteristic *pCharacteristic) override {
-    char alarmTime[6];  // Format "HH:MM\0"
-    if (myAlarm.set) {
-      sprintf(alarmTime, "%02d:%02d", myAlarm.hour, myAlarm.minute);
-      pCharacteristic->setValue((uint8_t *)alarmTime, strlen(alarmTime));  // Correction du setValue
-      Serial.printf("Lecture de l'heure de l'alarme : %s\n", alarmTime);
-    } else {
-      pCharacteristic->setValue((uint8_t *)"", 0);  // Renvoyer une chaîne vide si l'alarme n'est pas configurée
-      Serial.println("Lecture de l'heure de l'alarme : Alarme non configurée");
-    }
+    char alarmTime[20];  // Format "HH:MM,STATE"
+    sprintf(alarmTime, "%02d:%02d,%d", myAlarm.hour, myAlarm.minute, myAlarm.set ? 1 : 0);
+    pCharacteristic->setValue((uint8_t *)alarmTime, strlen(alarmTime));
+    Serial.printf("Lecture de l'heure de l'alarme : %s (État: %s)\n", 
+                 alarmTime, 
+                 myAlarm.set ? "activée" : "désactivée");
   }
 };
 
@@ -100,7 +97,7 @@ class AlarmDisableCallback : public BLECharacteristicCallbacks {
     String value = pCharacteristic->getValue();
     if (value == "DISABLE") {  // Vérifiez que la commande est valide
       if (myAlarm.set) {
-        myAlarm.set = false;  // Désactiver l'alarme
+        disableAlarm();  // Désactiver l'alarme
 
         // Activer l'écran
         displayActive = true;
