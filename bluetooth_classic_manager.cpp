@@ -107,11 +107,20 @@ void handle_bluetooth() {
 
     // Ne modifier le délai que si un appareil est connecté
     if (a2dp_sink.is_connected()) {
+      unsigned long tempsEcoule = millis() - derniereMiseAJour;
       if (delai <= TIMEOUT_STEP) {
         delai = 0;
+        // Déconnexion immédiate si on met le délai à 0
+        Serial.println("Timeout immédiat - Déconnexion");
+        a2dp_sink.disconnect();
       } else {
         delai -= TIMEOUT_STEP;
         Serial.printf("Timeout réduit à %d minutes\n", delai / 60000);
+        // Si le nouveau délai est déjà dépassé, déconnecter immédiatement
+        if (tempsEcoule >= delai) {
+          Serial.println("Nouveau délai déjà dépassé - Déconnexion immédiate");
+          a2dp_sink.disconnect();
+        }
       }
     }
     delay(200);
